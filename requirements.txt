@@ -3,5 +3,5 @@ torch
 torchsummary
 tqdm
 tensorboard
-skimage
+scikit-image
 matplotlib
