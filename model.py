@@ -1,5 +1,4 @@
 import torch
-import torchvision
 from torch.utils.data import DataLoader, Dataset
 from torch import nn
 from torch.nn import Conv2d, LeakyReLU, MaxPool2d, Flatten, Linear, Dropout, Upsample, ReLU, ConvTranspose2d, Tanh, BatchNorm2d
@@ -7,6 +6,8 @@ from torchsummary import summary # type: ignore
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 import time
+from typing import Tuple
+from pathlib import Path
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -184,22 +185,22 @@ class SARModel():
         self.device = device
 
         # Define optimizers
-        self.gen_optimizer = torch.optim.Adam(self.generator.parameters(), lr=1e-3, betas=(0.5, 0.999))
-        self.disc_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=1e-5, betas=(0.5, 0.999))
+        self.gen_optimizer = torch.optim.Adam(self.generator.parameters(), lr=1e-4, betas=(0.5, 0.999))
+        self.disc_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=1e-6, betas=(0.5, 0.999))
 
         # Define loss function
         self.criterion = nn.BCEWithLogitsLoss()  # Binary Cross Entropy Loss
 
-    def train(self, train_dataloader:DataLoader, epochs:int = 10):
+    def train(self, train_dataloader:DataLoader, epochs:int = 2, lr=0.001):
         # Fixed labels for real and fake images
         real_label = 1.0
         fake_label = 0.0
 
-        for epoch in tqdm(range(epochs)):
+        for epoch in range(epochs):
             epoch_gen_loss = 0.0
             epoch_disc_loss = 0.0
 
-            for i, (grayscale_imgs, rgb_imgs) in enumerate(train_dataloader):
+            for (grayscale_imgs, rgb_imgs) in tqdm(train_dataloader):
                 grayscale_imgs = grayscale_imgs.to(self.device)
                 rgb_imgs = rgb_imgs.to(self.device)
 
@@ -239,12 +240,58 @@ class SARModel():
             print(f"\nEpoch [{epoch + 1}/{epochs}] | Gen Loss: {epoch_gen_loss / len(train_dataloader):.4f} | Disc Loss: {epoch_disc_loss / len(train_dataloader):.4f}")
 
 
-if __name__ == '__main__':
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    g_model = GeneratorModel().to(device=device)
-    print(summary(g_model, (1, 256, 256)))
-    # print(summary(g_model, (1, 1024, 1024)))
-    # print(g_model(torch.randn(1, 1, 1024, 1024).to(device=device)))
+class LR4ColSAR(nn.Module):
+    def __init__(self, image_size:tuple = (256, 256),
+                 device:torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")):
+        super().__init__()
+        self.weights = [torch.randn(image_size, requires_grad=True, device=device) for _ in range(3)]
+        self.biases = [torch.randn(1, requires_grad=True, device=device) for _ in range(3)]
+        self.device = device
+        self.best_loss = float('inf')
 
-    d_model = DiscriminatorModel().to(device=device)
-    print(summary(d_model, (1, 256, 256), (3, 256, 256)))
+
+    def train(self, train_dataloader:DataLoader, epochs:int =10, lr:float = 1e-3, batch_size:int = 64):
+        optimizer = torch.optim.Adam(self.weights + self.biases, lr=lr)
+        criterion = nn.MSELoss()
+
+        for epoch in range(epochs):
+            epoch_loss = 0.0
+
+            for grayscale_imgs, rgb_imgs in tqdm(train_dataloader):
+                grayscale_imgs = grayscale_imgs.to(self.device).squeeze(1)
+                rgb_imgs = rgb_imgs.to(self.device)
+
+                batch_loss = 0.0
+
+                for i in range(3):
+                    y = rgb_imgs[:, i, :]
+
+                    y_hat = self.weights[i] * grayscale_imgs + self.biases[i]
+
+                    # print(y_hat.shape, y.shape)
+                    loss = criterion(y_hat, y)
+                    batch_loss += loss
+
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                
+                batch_loss /= 3
+
+            avg_epoch_loss = epoch_loss / len(train_dataloader)
+            print(f"\nEpoch [{epoch + 1}/{epochs}] | Loss: {avg_epoch_loss:.4f}")
+            
+            if avg_epoch_loss < self.best_loss:
+                self.best_loss = avg_epoch_loss
+                self.save_model()
+
+    def save_model(self, filename='best_lr4colsar.pth'):
+        save_dir = Path("models_lr4")
+        save_dir.mkdir(exist_ok=True)
+        file_path = save_dir / filename
+        print(f"Saving model to {file_path}")
+        torch.save({
+            'weights': [w.detach().cpu().numpy() for w in self.weights],
+            'biases': [b.detach().cpu().numpy() for b in self.biases],
+            'best_loss': self.best_loss
+        }, file_path)
