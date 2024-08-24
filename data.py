@@ -1,30 +1,33 @@
-from skimage import io
-import matplotlib.pyplot as plt
-from pathlib import Path
 import numpy as np
+from torch.utils.data import Dataset, DataLoader
+import torch
+from skimage import io # type: ignore
 
-# List of image file paths (p125 to p128)
-image_files = [
-    Path('E:\\Projects\\SAR colorization\\ROIs2017_winter_s1\\s1_116\\ROIs2017_winter_s1_116_p125.tif'),
-    Path('E:\\Projects\\SAR colorization\\ROIs2017_winter_s1\\s1_116\\ROIs2017_winter_s1_116_p126.tif'),
-    Path('E:\\Projects\\SAR colorization\\ROIs2017_winter_s1\\s1_116\\ROIs2017_winter_s1_116_p127.tif'),
-    # Path('E:\\Projects\\SAR colorization\\ROIs2017_winter_s1\\s1_116\\ROIs2017_winter_s1_116_p128.tif')
-]
+class create_dataset(Dataset):
+    def __init__(self, image_paths):
+        self.image_paths = image_paths
 
-# Create a 3x3 grid
-fig, axes = plt.subplots(1, 3, figsize=(12, 5))
+    def __len__(self):
+        return len(self.image_paths)
 
-# Loop through each image file and place it in the grid
-for idx, img_file in enumerate(image_files):
-    # Read the image stack
-    img = io.imread(img_file)
-    print(f"Original: {img.shape}")
-    img = np.mean(img, axis=2)
-    print(f"Combined: {img.shape}")
-    # Check the shape (expecting (256, 256, 2))
-    axes[idx].imshow(img, cmap='gray')
-    axes[idx].set_title(img_file.name)
-    axes[idx].axis('off')
+    def __getitem__(self, idx):
+        img = io.imread(self.image_paths[idx])
+            # Normalize the image to 0-1 range for each channel
+        img_normalized = (img - img.min()) / (img.max() - img.min())
 
-plt.tight_layout()
-plt.show()
+        # Create a pseudo-color image
+        pseudo_color = np.stack([
+            img_normalized[:,:,3],  # Red channel
+            img_normalized[:,:,2],  # Green channel
+            img_normalized[:,:,1] # img_normalized[:,:,1]) / 2  # Blue channel (average of the two)
+        ], axis=-1)
+        img = np.mean(pseudo_color, axis=2)
+        img = torch.tensor(img, dtype=torch.float).unsqueeze(0)
+        pseudo_color = torch.tensor(pseudo_color, dtype=torch.float).permute(2, 0, 1)
+        return img, pseudo_color
+    
+
+def build_dataloader(image_paths, shuffle:bool):
+    dataset = create_dataset(image_paths)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=shuffle)
+    return dataloader
